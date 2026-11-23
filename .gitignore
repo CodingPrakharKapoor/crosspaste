@@ -1,0 +1,16 @@
+@'
+# Phase 1
+phase1/mock-relay/node_modules/
+phase1/crosspaste-app/
+
+# Phase 2A
+phase2a/android-sdk/
+phase2a/gradle-dist/
+phase2a/app-project/.gradle/
+phase2a/app-project/app/build/
+phase2a/app-project/local.properties
+
+# General
+*.apk
+*.zip
+'@ | Set-Content .gitignore
