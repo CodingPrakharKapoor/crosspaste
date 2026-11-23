@@ -1,4 +1,3 @@
-@'
 # Phase 1
 phase1/mock-relay/node_modules/
 phase1/crosspaste-app/
@@ -10,7 +9,17 @@ phase2a/app-project/.gradle/
 phase2a/app-project/app/build/
 phase2a/app-project/local.properties
 
+# Phase 2B (live code)
+app-android/android-sdk/
+app-android/gradle-dist/
+app-android/.gradle/
+app-android/app/build/
+app-android/app/google-services.json
+app-android/local.properties
+relay/node_modules/
+relay/firebase-service-account.json
+
 # General
 *.apk
 *.zip
-'@ | Set-Content .gitignore
+.DS_Store
