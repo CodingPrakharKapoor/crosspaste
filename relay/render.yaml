@@ -11,6 +11,7 @@ services:
     runtime: node
     plan: free
     region: oregon
+    rootDir: relay
     buildCommand: npm install
     startCommand: node server.js
     healthCheckPath: /health
