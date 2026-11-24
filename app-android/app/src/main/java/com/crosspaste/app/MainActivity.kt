@@ -23,7 +23,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        val ipInput = findViewById<EditText>(R.id.ipInput)
+        val urlInput = findViewById<EditText>(R.id.ipInput)
         val startBtn = findViewById<Button>(R.id.startBtn)
         val stopBtn = findViewById<Button>(R.id.stopBtn)
         val tokenText = findViewById<TextView>(R.id.tokenText)
@@ -52,14 +52,15 @@ class MainActivity : AppCompatActivity() {
             }
 
         startBtn.setOnClickListener {
-            val ip = ipInput.text?.toString()?.trim().orEmpty()
-            if (ip.isEmpty()) {
-                ipInput.error = "Enter the laptop IP (printed by the relay)"
+            val raw = urlInput.text?.toString()?.trim().orEmpty()
+            if (raw.isEmpty()) {
+                urlInput.error = "Enter the relay URL or IP"
                 return@setOnClickListener
             }
+            val url = normalizeRelayUrl(raw)
             val intent = Intent(this, ClipboardForegroundService::class.java).apply {
                 action = ClipboardForegroundService.ACTION_START
-                putExtra(ClipboardForegroundService.EXTRA_HOST, ip)
+                putExtra(ClipboardForegroundService.EXTRA_URL, url)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(intent)
@@ -73,6 +74,28 @@ class MainActivity : AppCompatActivity() {
                 action = ClipboardForegroundService.ACTION_STOP
             }
             startService(intent)
+        }
+    }
+
+    /**
+     * Accept several forms of input and return a valid ws:// or wss:// URL:
+     *   "wss://crosspaste-relay.onrender.com"  -> as-is
+     *   "crosspaste-relay.onrender.com"        -> "wss://crosspaste-relay.onrender.com"
+     *   "192.168.1.10"                         -> "ws://192.168.1.10:8080"
+     *   "192.168.1.10:8080"                    -> "ws://192.168.1.10:8080"
+     *   "localhost:8080"                       -> "ws://localhost:8080"
+     */
+    private fun normalizeRelayUrl(input: String): String {
+        val trimmed = input.trim()
+        return when {
+            trimmed.startsWith("ws://") || trimmed.startsWith("wss://") -> trimmed
+            trimmed.contains("onrender.com") ||
+            trimmed.endsWith(".com") ||
+            trimmed.endsWith(".io") ||
+            trimmed.endsWith(".app") ||
+            trimmed.endsWith(".dev") -> "wss://$trimmed"
+            trimmed.contains(":") -> "ws://$trimmed"           // already has a port
+            else -> "ws://$trimmed:8080"                       // bare IP / hostname
         }
     }
 }

@@ -16,7 +16,7 @@
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Phase 2B - FCM push"
+        android:text="Phase 2B - cloud relay + FCM push"
         android:textSize="14sp"
         android:textColor="#666666"
         android:layout_marginBottom="24dp" />
@@ -24,7 +24,7 @@
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Laptop IP (printed by the relay)"
+        android:text="Relay URL or IP"
         android:textSize="13sp"
         android:textColor="#333333"
         android:layout_marginBottom="6dp" />
@@ -40,9 +40,9 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:hint="e.g. 192.168.1.10"
-            android:inputType="number|numberDecimal"
-            android:digits="0123456789." />
+            android:hint="wss://crosspaste-relay.onrender.com or 192.168.1.10"
+            android:inputType="textUri"
+            android:singleLine="true" />
 
         <Button
             android:id="@+id/startBtn"
@@ -72,7 +72,7 @@
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="After tapping Start, the notification appears. Paste works on Wi-Fi AND mobile data now."
+        android:text="After tapping Start, the notification appears. Paste works on Wi-Fi, mobile data, or any network - the phone just needs internet."
         android:textSize="13sp"
         android:lineSpacingExtra="2dp"
         android:padding="12dp"
@@ -82,7 +82,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="16dp"
-        android:text="Tip: the phone must connect to the relay on the same Wi-Fi at least once to register its FCM token. After that, push works from anywhere."
+        android:text="Tip: enter the Render URL (wss://...) to use the cloud relay from anywhere. Or enter a bare IP like 192.168.1.10 to use a laptop on the same Wi-Fi."
         android:textSize="12sp"
         android:textColor="#888888"
         android:lineSpacingExtra="2dp" />

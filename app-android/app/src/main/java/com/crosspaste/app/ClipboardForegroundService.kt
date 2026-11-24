@@ -25,7 +25,7 @@ class ClipboardForegroundService : Service() {
 
     private var webSocket: WebSocket? = null
     private var client: OkHttpClient? = null
-    private var host: String = ""
+    private var relayUrl: String = ""
     @Volatile private var shouldReconnect = false
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -45,13 +45,13 @@ class ClipboardForegroundService : Service() {
                 return START_NOT_STICKY
             }
             ACTION_START -> {
-                host = intent.getStringExtra(EXTRA_HOST) ?: ""
-                if (host.isEmpty()) {
+                relayUrl = intent.getStringExtra(EXTRA_URL) ?: ""
+                if (relayUrl.isEmpty()) {
                     stopSelf()
                     return START_NOT_STICKY
                 }
                 shouldReconnect = true
-                val notification = buildNotification("Connecting to $host:8080...")
+                val notification = buildNotification("Connecting to $relayUrl...")
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                     startForeground(
                         NOTIFICATION_ID,
@@ -76,14 +76,14 @@ class ClipboardForegroundService : Service() {
         }
         webSocket?.cancel()
         val req = Request.Builder()
-            .url("ws://$host:8080")
+            .url(relayUrl)
             .build()
         webSocket = client!!.newWebSocket(req, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
-                Log.i(TAG, "WebSocket open")
+                Log.i(TAG, "WebSocket open: $relayUrl")
                 updateNotification("Connected - ready to paste")
                 // Send our FCM token to the relay so it can push us when we're
-                // not on the same Wi-Fi (mobile data).
+                // not actively connected (mobile data, different city, etc.).
                 val token = getSharedPreferences("crosspaste", MODE_PRIVATE)
                     .getString("fcm_token", null)
                 if (token != null) {
@@ -94,7 +94,7 @@ class ClipboardForegroundService : Service() {
                     ws.send(reg)
                     Log.i(TAG, "Sent FCM token to relay")
                 } else {
-                    Log.w(TAG, "No FCM token yet - relay will only push via LAN")
+                    Log.w(TAG, "No FCM token yet - relay will only deliver via WebSocket")
                 }
             }
 
@@ -144,7 +144,7 @@ class ClipboardForegroundService : Service() {
             } catch (e: InterruptedException) {
                 return@Thread
             }
-            if (shouldReconnect && host.isNotEmpty()) {
+            if (shouldReconnect && relayUrl.isNotEmpty()) {
                 Log.i(TAG, "Reconnecting...")
                 connectWebSocket()
             }
@@ -186,7 +186,7 @@ class ClipboardForegroundService : Service() {
     companion object {
         const val ACTION_START = "com.crosspaste.app.START"
         const val ACTION_STOP = "com.crosspaste.app.STOP"
-        const val EXTRA_HOST = "host"
+        const val EXTRA_URL = "url"
         const val NOTIFICATION_ID = 1
         const val CHANNEL_ID = "crosspaste_service"
         const val TAG = "CrossPaste"

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <style>
-body { font-family: system-ui, sans-serif; width: 320px; padding: 12px; font-size: 13px; }
+body { font-family: system-ui, sans-serif; width: 360px; padding: 12px; font-size: 13px; }
 h2 { margin: 0 0 8px; font-size: 16px; }
 label { display: block; margin-bottom: 4px; color: #333; }
 input { width: 100%; padding: 6px; margin-bottom: 8px; box-sizing: border-box; font-size: 13px; }
@@ -18,12 +18,13 @@ button:hover { background: #3700B3; }
 <body>
 <h2>CrossPaste</h2>
 <label>Relay URL</label>
-<input id="relayUrl" type="text" placeholder="ws://localhost:8080">
+<input id="relayUrl" type="text" placeholder="wss://crosspaste-relay.onrender.com">
 <button id="save">Save &amp; Connect</button>
 <div class="status" id="status">Checking…</div>
 <div class="hint">
-  Right-click any selected text on a webpage → "Send selection to phone".
-  The relay URL is usually ws://LAPTOP-IP:8080.
+  Use the Render URL (wss://...) to sync from anywhere.
+  Or use ws://LAPTOP-IP:8080 if the laptop is on the same Wi-Fi.
+  Right-click any selected text → "Send selection to phone".
 </div>
 <script src="popup.js"></script>
 </body>

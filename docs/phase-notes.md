@@ -39,39 +39,59 @@
 
 ---
 
-## Phase 2B — FCM push + encryption + auto-start
+## Phase 2B — FCM push + cloud relay + encryption + auto-start
 
-**Goal:** make it usable daily without manual setup.
+**Goal:** make it usable daily, from anywhere, without manual setup.
 
-### Step 2B.1 — FCM push integration (this step)
+### Step 2B.1 — FCM push integration
 
 **Architecture changes:**
 - Phone registers its FCM token with the relay on WebSocket connect
 - Relay stores tokens in memory
 - When Chrome extension sends clipboard text:
-  - Relay broadcasts via WebSocket to LAN-connected phones (instant)
+  - Relay broadcasts via WebSocket to connected phones (instant)
   - Relay pushes via FCM to all registered tokens (works on mobile data)
 - New `CrossPasteFirebaseMessagingService` on phone receives FCM push, writes to clipboard
 
-**What this proves:** Paste works on mobile data, not just same Wi-Fi.
-
-**Limitations still:**
-- Relay sees plaintext (encryption is Step 2B.2)
-- Relay must be running on laptop (auto-start is Step 2B.4)
-- Phone must register token once via LAN before FCM works
+**What this proved:** Paste works on mobile data, not just same Wi-Fi — but only if the phone already registered its FCM token with the relay (which still required being on the same network initially).
 
 **Files:** `app-android/`, `chrome-extension/`, `relay/`, `docs/` (live at repo root)
 
+### Step 2B.1.5 — Cloud relay deploy (this step)
+
+**Architecture changes:**
+- Relay runs on Render (free tier) instead of on the laptop
+- Relay listens on `process.env.PORT`, uses HTTP server + WebSocket.Server
+- Firebase credentials read from `FIREBASE_SERVICE_ACCOUNT` env var (no secret file in git)
+- `/health` endpoint for Render health checks
+- Android app accepts full `wss://...` URLs (not just IPs) — backward compatible with bare IPs
+- Chrome extension popup updated to suggest cloud URLs
+
+**What this proved:** Cross-network clipboard sync. A phone in another city can connect to the cloud relay, register its FCM token, and receive pastes from your laptop anywhere in the world.
+
+**Files changed (cloud-deploy):**
+- `relay/server.js` — uses `process.env.PORT`, HTTP server wraps WebSocket, env-var credentials
+- `relay/package.json` — added `engines.node`
+- `relay/render.yaml` — Render blueprint
+- `relay/README.md` — local + cloud deploy instructions
+- `app-android/app/src/main/java/com/crosspaste/app/MainActivity.kt` — accepts full URLs, has `normalizeRelayUrl()` helper
+- `app-android/app/src/main/java/com/crosspaste/app/ClipboardForegroundService.kt` — uses full URL instead of host
+- `app-android/app/src/main/res/layout/activity_main.xml` — updated hint to mention cloud URL
+- `chrome-extension/popup.html` — updated hint
+- `chrome-extension/README.md` — updated
+- `docs/cloud-deploy.md` — full Render walkthrough
+- `docs/phase-notes.md` — this file
+
 ### Step 2B.2 — End-to-end encryption (planned)
 
-Add libsodium to Android app and Chrome extension. Shared key established via QR-code pairing.
+Add libsodium to Android app and Chrome extension. Shared key established via manual base64 pairing (simplest) or QR code (more polished).
 
 ### Step 2B.3 — Relay updates for encrypted payloads (planned)
 
-Relay becomes a "dumb pipe" — can't read clipboard contents.
+Relay becomes a "dumb pipe" — can't read clipboard contents, just forwards opaque ciphertext.
 
 ### Step 2B.4 — Auto-start on boot (planned)
 
 - Android: `BOOT_COMPLETED` receiver starts the foreground service
 - Windows: relay runs as a scheduled task / NSSM service
-- IP persisted in SharedPreferences (no manual entry on relaunch)
+- URL persisted in SharedPreferences (no manual entry on relaunch)

@@ -1,0 +1,23 @@
+# Render deployment config for the CrossPaste relay.
+# Docs: https://render.com/docs/blueprint-spec
+#
+# To deploy: connect this repo to Render, and Render will read this file.
+# After deploying, set the FIREBASE_SERVICE_ACCOUNT env var in the Render
+# dashboard (see docs/cloud-deploy.md).
+
+services:
+  - type: web
+    name: crosspaste-relay
+    runtime: node
+    plan: free
+    region: oregon
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20.11.0
+      # Don't put FIREBASE_SERVICE_ACCOUNT here — set it in the Render dashboard
+      # as a secret env var. Its value is the entire contents of your
+      # firebase-service-account.json file (see docs/cloud-deploy.md).

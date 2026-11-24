@@ -2,7 +2,7 @@
 
 Right-click any selected text on a webpage → "Send selection to phone".
 
-The extension connects to the relay via WebSocket and forwards the selected text. The relay then pushes it to the phone via WebSocket (LAN) or FCM (mobile data).
+The extension connects to the relay via WebSocket (local or cloud) and forwards the selected text. The relay then pushes it to the phone via WebSocket (instant) or FCM (push for offline phones).
 
 ## Install (one-time)
 
@@ -15,18 +15,21 @@ The extension connects to the relay via WebSocket and forwards the selected text
 ## Configure
 
 1. Click the CrossPaste icon in your toolbar
-2. Enter the relay URL — usually `ws://LAPTOP-IP:8080` (the IP printed by the relay when it starts)
+2. Enter the relay URL:
+   - **Cloud (recommended):** `wss://crosspaste-relay-xxxx.onrender.com` (your Render URL)
+   - **Local (same Wi-Fi only):** `ws://LAPTOP-IP:8080` (the IP printed by the relay on startup)
 3. Click **Save & Connect**
-4. The status should show "✓ Connected"
+4. The status should show: **✓ Connected to ...**
 
 ## Use
 
 1. Select any text on any webpage
 2. Right-click → "Send selection to phone"
-3. The text appears on your phone's clipboard
+3. The text appears on your phone's clipboard — works whether the phone is on Wi-Fi, mobile data, or in another city
 
-## What's new in Phase 2B Step 1
+## What's new in Phase 2B (cloud deploy)
 
-Nothing changed in the extension itself from Phase 1 — the relay handles the FCM push transparently. The extension still just sends `{type:"clipboard", text:"..."}` over WebSocket.
+- Popup hint updated to mention both cloud (`wss://...`) and local (`ws://...`) URLs
+- The extension itself is unchanged — it just sends `{type:"clipboard", text:"..."}` over WebSocket to whatever URL you configure
 
 Encryption (Phase 2B Step 2) will modify this extension to encrypt the text before sending.
