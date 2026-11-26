@@ -1,16 +1,21 @@
-// CrossPaste relay - bridges Chrome extension ↔ phone via WebSocket + FCM push.
+// CrossPaste relay v0.3.2 — rate limiting + active-connection tracking
 //
-// Runs both locally (ws://LAN-IP:8080) and on Render (wss://your-app.onrender.com).
+// v0.3.2 changes:
+//   - Per-IP connection rate limiting: max 5 new WebSocket connections per
+//     10 sec per IP, then a 30-sec cooldown. Stops the log flooding and CPU
+//     spikes we saw when a buggy client reconnects in a tight loop. The
+//     Android app's exponential backoff means a rate-limited client just
+//     waits longer before the next attempt.
+//   - Tracks active WebSocket connections separately from registered FCM
+//     tokens, so /health shows both:
+//       registeredPhones   — phones we can push to via FCM (may be 0 active)
+//       activeConnections  — phones currently connected over WebSocket
+//   - Logs a phone registration once per new token. Re-registrations of an
+//     already-known token no longer spam the log.
 //
 // Flow:
 //   Chrome extension ──ws/wss──> relay ──ws/wss──> phone (instant delivery)
 //                                relay ──FCM──> phone (push for offline phones)
-//
-// Phone registers its FCM token with the relay on WebSocket connect. The relay
-// stores tokens in memory. When a clipboard message arrives from the Chrome
-// extension, the relay:
-//   1. Broadcasts it to all WebSocket-connected phones (instant)
-//   2. Pushes it via FCM to all registered tokens (works on mobile data)
 
 const http = require('http');
 const WebSocket = require('ws');
@@ -19,11 +24,10 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-// Render assigns PORT via env var. Default to 8080 for local dev.
 const PORT = process.env.PORT || 8080;
+const VERSION = '0.3.2';
 
-// Load Firebase credentials. On Render, store the entire JSON contents in the
-// FIREBASE_SERVICE_ACCOUNT env var. Locally, place the file in this folder.
+// ---- Firebase credentials --------------------------------------------------
 let serviceAccount;
 const envVarContents = process.env.FIREBASE_SERVICE_ACCOUNT;
 if (envVarContents) {
@@ -39,10 +43,8 @@ if (envVarContents) {
     if (!fs.existsSync(serviceAccountPath)) {
         console.error('');
         console.error('ERROR: No Firebase credentials found.');
-        console.error('');
-        console.error('To fix:');
         console.error('  Local:  place the file at relay/firebase-service-account.json');
-        console.error('  Render: set FIREBASE_SERVICE_ACCOUNT env var to the JSON file contents');
+        console.error('  Cloud:  set FIREBASE_SERVICE_ACCOUNT env var to the JSON file contents');
         console.error('');
         console.error('See docs/cloud-deploy.md for the full walkthrough.');
         console.error('');
@@ -55,19 +57,46 @@ admin.initializeApp({
     credential: admin.credential.cert(serviceAccount)
 });
 
-const phoneTokens = new Set();
+// ---- State -----------------------------------------------------------------
+const phoneTokens = new Set();          // FCM tokens of phones we can push to
+const ipConnectLog = new Map();         // ip -> [connection timestamps in ms]
+const ipCooldownUntil = new Map();      // ip -> ms timestamp; reject until then
 
-// HTTP server — needed for Render's health checks + WebSocket upgrade.
-// Render proxies HTTPS → HTTP internally, so we listen on plain HTTP.
-// WebSocket clients connect with wss:// and Render terminates TLS for us.
+const RATE_WINDOW_MS = 10_000;          // 10 sec sliding window
+const RATE_MAX_CONNS = 5;               // max 5 connections per 10s per IP
+const RATE_COOLDOWN_MS = 30_000;        // 30 sec cooldown after exceeding
+
+function checkRateLimit(ip) {
+    const now = Date.now();
+    const cooldownUntil = ipCooldownUntil.get(ip) || 0;
+    if (now < cooldownUntil) {
+        return { allowed: false, reason: 'cooldown' };
+    }
+    const log = ipConnectLog.get(ip) || [];
+    const recent = log.filter(t => now - t < RATE_WINDOW_MS);
+    if (recent.length >= RATE_MAX_CONNS) {
+        ipCooldownUntil.set(ip, now + RATE_COOLDOWN_MS);
+        ipConnectLog.set(ip, []);       // reset window after cooldown trigger
+        console.log(`[!] Rate limit triggered for ${ip} - cooldown ${RATE_COOLDOWN_MS / 1000}s`);
+        return { allowed: false, reason: 'rate_limited' };
+    }
+    recent.push(now);
+    ipConnectLog.set(ip, recent);
+    return { allowed: true };
+}
+
+// ---- HTTP server -----------------------------------------------------------
+// Render proxies HTTPS → HTTP internally. WebSocket clients connect with
+// wss:// and the platform terminates TLS for us.
 const server = http.createServer((req, res) => {
     if (req.url === '/' || req.url === '/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
             ok: true,
             service: 'crosspaste-relay',
-            version: '0.3.1',
+            version: VERSION,
             registeredPhones: phoneTokens.size,
+            activeConnections: getActiveConnectionCount(),
             uptimeSec: Math.floor(process.uptime())
         }));
         return;
@@ -78,9 +107,24 @@ const server = http.createServer((req, res) => {
 
 const wss = new WebSocket.Server({ server });
 
+function getActiveConnectionCount() {
+    let count = 0;
+    wss.clients.forEach(c => { if (c.readyState === WebSocket.OPEN) count++; });
+    return count;
+}
+
 wss.on('connection', (ws, req) => {
     const ip = req.socket.remoteAddress;
-    console.log(`[+] New connection from ${ip}`);
+
+    const rl = checkRateLimit(ip);
+    if (!rl.allowed) {
+        // 1008 = policy violation. The client treats this as a hard close
+        // and (with exponential backoff) waits before retrying.
+        try { ws.close(1008, rl.reason); } catch (e) {}
+        return;
+    }
+
+    console.log(`[+] New connection from ${ip} (active: ${getActiveConnectionCount()})`);
 
     ws.on('message', async (raw) => {
         let msg;
@@ -90,16 +134,23 @@ wss.on('connection', (ws, req) => {
             return;
         }
 
-        // Phone registers its FCM token
+        // Phone registers its FCM token so the relay can push to it when the
+        // WebSocket isn't connected (mobile data, different city, app closed).
         if (msg.type === 'register' && msg.fcmToken) {
-            phoneTokens.add(msg.fcmToken);
-            console.log(`[+] Phone registered (total: ${phoneTokens.size})`);
+            if (!phoneTokens.has(msg.fcmToken)) {
+                phoneTokens.add(msg.fcmToken);
+                console.log(`[+] Phone registered (total: ${phoneTokens.size})`);
+            }
+            // Ack so the client knows registration landed (lets us add
+            // re-registration-on-reconnect logic without log spam).
+            try { ws.send(JSON.stringify({ type: 'register-ack', ok: true })); } catch (e) {}
             return;
         }
 
-        // Chrome extension sends clipboard text
+        // Chrome extension sends clipboard text. The relay:
+        //   1. Broadcasts to all currently-connected phones (instant)
+        //   2. Pushes via FCM to all registered tokens (works on mobile data)
         if (msg.type === 'clipboard' && msg.text) {
-            // 1. Broadcast to all WebSocket-connected phones (instant)
             let wsDelivered = 0;
             wss.clients.forEach(client => {
                 if (client.readyState === WebSocket.OPEN && client !== ws) {
@@ -108,7 +159,6 @@ wss.on('connection', (ws, req) => {
                 }
             });
 
-            // 2. Push via FCM to all registered tokens (works on mobile data)
             // FCM data payload limit is 4 KB; truncate to be safe.
             const truncated = msg.text.length > 4000
                 ? msg.text.substring(0, 4000)
@@ -142,6 +192,13 @@ wss.on('connection', (ws, req) => {
             console.log(`[>] Clipboard ${msg.text.length} chars | WS:${wsDelivered} FCM-ok:${pushSent} FCM-fail:${pushFailed}`);
         }
     });
+
+    ws.on('close', () => {
+        const remaining = getActiveConnectionCount();
+        if (remaining === 0) {
+            console.log(`[-] Last connection closed (active: 0)`);
+        }
+    });
 });
 
 function getLocalIP() {
@@ -158,7 +215,7 @@ function getLocalIP() {
 
 server.listen(PORT, () => {
     console.log('');
-    console.log('CrossPaste relay v0.3.1');
+    console.log(`CrossPaste relay v${VERSION}`);
     console.log('========================');
 
     if (process.env.RENDER_EXTERNAL_URL) {
@@ -176,7 +233,7 @@ server.listen(PORT, () => {
         console.log(`(Use the LAN IP for same-Wi-Fi devices)`);
     }
     console.log('');
-    console.log(`Registered phones: ${phoneTokens.size}`);
+    console.log(`Rate limit: ${RATE_MAX_CONNS} conns / ${RATE_WINDOW_MS / 1000}s per IP, ${RATE_COOLDOWN_MS / 1000}s cooldown`);
     console.log('');
     console.log('Listening for connections...');
 });
