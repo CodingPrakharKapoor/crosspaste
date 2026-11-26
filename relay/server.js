@@ -1,4 +1,14 @@
-// CrossPaste relay v0.3.2 — rate limiting + active-connection tracking
+// CrossPaste relay v0.3.3 — rate limiting + real client IP + active-connection tracking
+//
+// v0.3.3 changes:
+//   - Log and rate-limit by the REAL client IP (first value of the
+//     x-forwarded-for header), not req.socket.remoteAddress. On Render the
+//     socket address is the platform's internal reverse proxy (::1), so
+//     every client - phone, extension, health checker - looked identical
+//     in the logs, and per-IP rate limiting was useless (all clients
+//     shared the proxy's single 5-conn bucket, so a stormy phone blocked
+//     the extension too). With the real IP, the log shows who is actually
+//     reconnecting and each client gets its own rate-limit bucket.
 //
 // v0.3.2 changes:
 //   - Per-IP connection rate limiting: max 5 new WebSocket connections per
@@ -25,7 +35,7 @@ const path = require('path');
 const os = require('os');
 
 const PORT = process.env.PORT || 8080;
-const VERSION = '0.3.2';
+const VERSION = '0.3.3';
 
 // ---- Firebase credentials --------------------------------------------------
 let serviceAccount;
@@ -114,7 +124,14 @@ function getActiveConnectionCount() {
 }
 
 wss.on('connection', (ws, req) => {
-    const ip = req.socket.remoteAddress;
+    // Render (and most reverse proxies) put the real client IP in
+    // x-forwarded-for. req.socket.remoteAddress is the proxy itself (::1
+    // on Render), which makes every client look identical in the logs and
+    // collapses all per-IP rate limiting into one shared bucket. Take the
+    // leftmost IP (the originating client); fall back to the socket
+    // address only if the header is absent (e.g. local dev).
+    const xff = req.headers['x-forwarded-for'];
+    const ip = (xff && String(xff).split(',')[0].trim()) || req.socket.remoteAddress;
 
     const rl = checkRateLimit(ip);
     if (!rl.allowed) {

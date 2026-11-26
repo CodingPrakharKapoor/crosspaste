@@ -15,7 +15,15 @@
 //   3. Exponential backoff: 2s -> 4s -> 8s -> 16s -> 30s (capped), reset on
 //      successful open. The relay's per-IP rate limiter is the backstop.
 //
-//   4. New popup messages:
+//   4. Toolbar badge shows connection state at a glance (no popup open
+//      needed):
+//        green  check  connected
+//        amber  arrow  should be connected but isn't (reconnecting)
+//        red    X      stopped (user clicked Stop)
+//      setBadgeText persists across service-worker evictions, so the icon
+//      keeps reflecting state even while the worker is asleep.
+//
+//   5. New popup messages:
 //        send-text        - send arbitrary text typed in the popup
 //        stop-connection  - fully disconnect (user asked for this)
 //        start-connection - reconnect after a stop-connection
@@ -41,6 +49,7 @@ chrome.storage.local.get(['relayUrl', 'shouldConnect'], (result) => {
     // Each alarm fires onAlarm, which pokes the worker back to life.
     chrome.alarms.create(ALARM_NAME, { periodInMinutes: 0.5 });
     if (shouldConnect) connectRelay();
+    updateBadge();
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -51,15 +60,37 @@ chrome.alarms.onAlarm.addListener((alarm) => {
         console.log('CrossPaste: keepalive check - reconnecting');
         connectRelay();
     }
+    updateBadge();
 });
 
 function wsConnected() {
     return !!(ws && ws.readyState === WebSocket.OPEN);
 }
 
+// Toolbar badge. No permission needed beyond the MV3 "action" declared in
+// manifest.json. Wrapped in try/catch because the action API is only
+// present in extension contexts (not content scripts), just in case.
+function updateBadge() {
+    let text, color;
+    if (!shouldConnect) {
+        text = '\u2715'; color = '#ef4444';        // red X - stopped
+    } else if (wsConnected()) {
+        text = '\u2713'; color = '#22c55e';        // green check - connected
+    } else {
+        text = '\u21bb'; color = '#f59e0b';        // amber arrow - reconnecting
+    }
+    try {
+        chrome.action.setBadgeText({ text });
+        chrome.action.setBadgeBackgroundColor({ color });
+    } catch (e) {
+        // action API unavailable - silently skip.
+    }
+}
+
 function connectRelay() {
     if (!shouldConnect) {
         console.log('CrossPaste: skip connect - shouldConnect=false');
+        updateBadge();
         return;
     }
     if (isConnecting) {
@@ -77,15 +108,18 @@ function connectRelay() {
         ws = null;
     }
     isConnecting = true;
+    updateBadge();   // amber while connecting
     try {
         ws = new WebSocket(relayUrl);
         ws.onopen = () => {
             isConnecting = false;
             backoffMs = INITIAL_BACKOFF_MS;
             console.log('CrossPaste: connected to', relayUrl);
+            updateBadge();   // green
         };
         ws.onclose = () => {
             isConnecting = false;
+            updateBadge();   // amber (or red, if shouldConnect flipped)
             if (!shouldConnect) {
                 console.log('CrossPaste: closed (intentional)');
                 return;
@@ -100,6 +134,7 @@ function connectRelay() {
     } catch (e) {
         isConnecting = false;
         console.error('CrossPaste: failed to connect', e);
+        updateBadge();
         if (shouldConnect) scheduleReconnect();
     }
 }
@@ -182,6 +217,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             ws = null;
         }
         isConnecting = false;
+        updateBadge();   // red X
         sendResponse({ ok: true });
         return true;
     }
