@@ -6,7 +6,6 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.ClipData
 import android.content.ClipboardManager
-import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
@@ -73,7 +72,11 @@ class ClipboardForegroundService : Service() {
     }
 
     private val keepAliveHandler = Handler(Looper.getMainLooper())
-    private val keepAliveRunnable = Runnable {
+    // Explicit type annotation is required: the lambda references
+    // keepAliveRunnable inside its own initializer, which makes Kotlin's
+    // type inference recursive ("Type checking has run into a recursive
+    // problem"). Pinning the type to Runnable breaks the cycle.
+    private val keepAliveRunnable: Runnable = Runnable {
         pingHealthEndpoint()
         // Re-post ourselves - keepalive runs for the lifetime of the service.
         keepAliveHandler.postDelayed(keepAliveRunnable, KEEPALIVE_INTERVAL_MS)
@@ -203,7 +206,11 @@ class ClipboardForegroundService : Service() {
     }
 
     private fun writeToClipboard(text: String) {
-        val clipboard = getSystemService(Context.CLIPBOARD_MANAGER) as ClipboardManager
+        // Use the typed getSystemService overload (same pattern as
+        // NotificationManager below). The Context.CLIPBOARD_MANAGER string
+        // constant fails to resolve under the current Kotlin/AGP combo;
+        // the typed form also drops the cast.
+        val clipboard = getSystemService(ClipboardManager::class.java)
         clipboard.setPrimaryClip(ClipData.newPlainText("CrossPaste", text))
         val preview = if (text.length > 40) text.take(40) + "..." else text
         updateNotification("Last: $preview")
