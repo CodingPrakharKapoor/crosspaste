@@ -3,29 +3,86 @@
 <head>
 <meta charset="utf-8">
 <style>
-body { font-family: system-ui, sans-serif; width: 360px; padding: 12px; font-size: 13px; }
+body { font-family: system-ui, sans-serif; width: 380px; padding: 12px; font-size: 13px; }
 h2 { margin: 0 0 8px; font-size: 16px; }
-label { display: block; margin-bottom: 4px; color: #333; }
-input { width: 100%; padding: 6px; margin-bottom: 8px; box-sizing: border-box; font-size: 13px; }
-button { padding: 6px 12px; cursor: pointer; background: #6750A4; color: white; border: none; border-radius: 4px; }
+label { display: block; margin-bottom: 4px; color: #333; font-weight: 500; }
+input, textarea {
+  width: 100%;
+  padding: 6px;
+  margin-bottom: 8px;
+  box-sizing: border-box;
+  font-size: 13px;
+  font-family: inherit;
+}
+textarea { resize: vertical; min-height: 60px; max-height: 180px; }
+button {
+  padding: 6px 12px;
+  cursor: pointer;
+  background: #6750A4;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 13px;
+}
 button:hover { background: #3700B3; }
-.status { margin-top: 8px; padding: 8px; background: #f5f5f5; border-radius: 4px; font-size: 12px; }
+button.secondary { background: #555; }
+button.secondary:hover { background: #333; }
+button.danger { background: #c62828; }
+button.danger:hover { background: #b71c1c; }
+button.success { background: #2e7d32; }
+button.success:hover { background: #1b5e20; }
+.row { display: flex; gap: 6px; margin-bottom: 8px; }
+.row > * { flex: 1; }
+.status {
+  margin-top: 4px;
+  margin-bottom: 8px;
+  padding: 8px;
+  background: #f5f5f5;
+  border-radius: 4px;
+  font-size: 12px;
+  word-break: break-all;
+}
 .ok { color: #2e7d32; }
 .err { color: #c62828; }
-.hint { margin-top: 12px; font-size: 11px; color: #888; line-height: 1.4; }
+.warn { color: #f57c00; }
+.hint { margin-top: 12px; font-size: 11px; color: #888; line-height: 1.5; }
+hr { border: none; border-top: 1px solid #eee; margin: 12px 0; }
+#qrImg { display: block; margin: 8px auto; max-width: 220px; max-height: 220px; }
+#qrWrap { text-align: center; display: none; }
 </style>
 </head>
 <body>
 <h2>CrossPaste</h2>
+
 <label>Relay URL</label>
 <input id="relayUrl" type="text" placeholder="wss://crosspaste-relay.onrender.com">
-<button id="save">Save &amp; Connect</button>
-<div class="status" id="status">Checking…</div>
-<div class="hint">
-  Use the Render URL (wss://...) to sync from anywhere.
-  Or use ws://LAPTOP-IP:8080 if the laptop is on the same Wi-Fi.
-  Right-click any selected text → "Send selection to phone".
+<div class="row">
+  <button id="save">Save &amp; Connect</button>
+  <button id="toggleConn" class="danger">Stop connection</button>
 </div>
+
+<div class="status" id="status">Checking…</div>
+
+<hr>
+
+<label>Send any text to phone</label>
+<textarea id="freeText" placeholder="Type or paste anything here, then click Send text. It will appear on your phone's clipboard. (Ctrl+Enter also sends.)"></textarea>
+<div class="row">
+  <button id="sendText">Send text</button>
+  <button id="qrBtn" class="secondary">Show QR code</button>
+</div>
+
+<div id="qrWrap">
+  <img id="qrImg" alt="QR code for relay URL">
+  <div class="hint">Scan with your phone camera, copy the URL, paste it into CrossPaste on your phone.</div>
+</div>
+
+<div class="hint">
+  Right-click any selected text on a webpage → "Send selection to phone".<br>
+  Or type/paste text above and click "Send text".<br>
+  The "Stop connection" button fully disconnects the extension from the relay — useful when you don't want it talking to the relay.
+</div>
+
 <script src="popup.js"></script>
 </body>
 </html>
