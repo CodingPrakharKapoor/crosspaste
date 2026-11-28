@@ -37,14 +37,26 @@ import java.util.concurrent.TimeUnit
  *      The old code spawned a fresh Thread on every onClosed AND onFailure,
  *      which doubled on each disconnect and exploded into 30+ reconnects/min.
  *
- *   2. isConnecting flag prevents concurrent connectWebSocket calls. Without
- *      it, two pending reconnects could both fire and create two sockets,
- *      each failing, each scheduling two more, etc.
+ *   2. isConnecting flag + socket staleness guard. isConnecting blocks
+ *      concurrent connectWebSocket calls. The staleness guard is the critical
+ *      part: every WebSocketListener callback first checks `ws !== webSocket`
+ *      and returns if so. connectWebSocket nulls webSocket BEFORE cancelling
+ *      the old socket, so when cancel() fires the old socket's onClosed/
+ *      onFailure asynchronously on OkHttp's dispatcher thread, those
+ *      callbacks see a stale socket and no-op. Without this guard the async
+ *      callback set isConnecting=false mid-connect, which let overlapping
+ *      connects stack up - the active-connection count climbed to 12 because
+ *      each new socket leaked the previous one instead of replacing it.
  *
- *   3. Exponential backoff: 2s -> 4s -> 8s -> 16s -> 30s (capped). Reset to
- *      2s on a successful onOpen. The relay's rate limiter (max 5 conns/10s
- *      per IP, then 30s cooldown) is the backstop if the client still
- *      reconnects too fast.
+ *   3. Exponential backoff: 2s -> 4s -> 8s -> 16s -> 30s (capped). Backoff is
+ *      NOT reset on onOpen - it resets only after a connection survives
+ *      STABLE_RESET_MS (10s). The relay closes rate-limited sockets with code
+ *      1008 AFTER the handshake completes, so onOpen fires for doomed
+ *      connections; resetting there pinned backoff at 2s forever (the flat
+ *      "2s, 2s, 2s..." storm in the logs). Deferring the reset to 10s means a
+ *      rate-limited socket (closes in ms) never resets backoff, so reconnects
+ *      escalate 2->4->8->16->30 and the tight loop breaks. The relay's per-IP
+ *      rate limiter (5 conns/10s, then 30s cooldown) is the backstop.
  *
  *   4. Periodic HTTP HEAD to /health every 5 minutes. Render's free tier
  *      sleeps services after 15 min of "HTTP inactivity"; the WebSocket's
@@ -82,6 +94,21 @@ class ClipboardForegroundService : Service() {
         keepAliveHandler.postDelayed(keepAliveRunnable, KEEPALIVE_INTERVAL_MS)
     }
 
+    // Backoff is NOT reset in onOpen. The relay closes rate-limited sockets
+    // with code 1008 AFTER the WebSocket handshake completes, so onOpen fires
+    // for connections the relay is about to kick. Resetting there pins backoff
+    // at 2s forever - the bug that produced the flat "2s, 2s, 2s..." pattern
+    // in the logs. Instead we reset backoff only after a connection has
+    // stayed open STABLE_RESET_MS, proving it is a genuinely accepted
+    // connection and not a rate-limited one. A rate-limited socket closes
+    // within milliseconds, so the reset never fires and backoff escalates.
+    private val resetBackoffRunnable = Runnable {
+        if (backoffMs != INITIAL_BACKOFF_MS) {
+            backoffMs = INITIAL_BACKOFF_MS
+            Log.i(TAG, "Connection stable ${STABLE_RESET_MS / 1000}s - backoff reset to ${INITIAL_BACKOFF_MS}ms")
+        }
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -95,6 +122,7 @@ class ClipboardForegroundService : Service() {
                 shouldReconnect = false
                 isConnecting = false
                 handler.removeCallbacks(reconnectRunnable)
+                handler.removeCallbacks(resetBackoffRunnable)
                 keepAliveHandler.removeCallbacks(keepAliveRunnable)
                 try { webSocket?.close(1000, "user stopped") } catch (e: Exception) {}
                 webSocket = null
@@ -142,20 +170,43 @@ class ClipboardForegroundService : Service() {
                 .pingInterval(15, TimeUnit.SECONDS)
                 .build()
         }
-        // Cancel any stale socket. We don't null its listeners first because
-        // isConnecting=true blocks scheduleReconnect from acting on whatever
-        // callbacks the old socket fires during teardown.
-        try { webSocket?.cancel() } catch (e: Exception) {}
+
+        // Tear down any stale socket. ORDER MATTERS: null webSocket FIRST,
+        // then cancel. cancel() triggers the old socket's onClosed/onFailure
+        // asynchronously on OkHttp's dispatcher thread. Without the staleness
+        // guard, those callbacks would set isConnecting=false and clobber
+        // THIS connect in flight - the race that let sockets pile up
+        // (active connections climbed to 12 because each overlapping connect
+        // leaked the previous socket instead of replacing it). By nulling
+        // webSocket before cancel, the `ws !== webSocket` guard at the top
+        // of every callback makes the old socket's late callbacks no-ops.
+        val oldSocket = webSocket
+        webSocket = null
+        try { oldSocket?.cancel() } catch (e: Exception) {}
+        // A pending backoff-reset belonging to the previous socket must not
+        // fire into this new attempt - it would wrongly reset backoff for a
+        // connection that has not proven itself stable yet.
+        handler.removeCallbacks(resetBackoffRunnable)
 
         val req = Request.Builder()
             .url(relayUrl)
             .build()
-        webSocket = client!!.newWebSocket(req, object : WebSocketListener() {
+        val newSocket = client!!.newWebSocket(req, object : WebSocketListener() {
+            // Every callback first checks it is still the active socket.
+            // If connectWebSocket has since replaced webSocket (reconnect,
+            // stop, or destroy), this callback is from a stale socket and
+            // must be ignored - no state mutation, no reconnect scheduling.
             override fun onOpen(ws: WebSocket, response: Response) {
+                if (ws !== webSocket) return
                 isConnecting = false
-                backoffMs = INITIAL_BACKOFF_MS   // success -> reset backoff
                 Log.i(TAG, "WebSocket open: $relayUrl")
                 updateNotification("Connected - ready to paste")
+                // Deliberately do NOT reset backoff here. See resetBackoffRunnable:
+                // the relay closes rate-limited sockets (1008) after the handshake,
+                // so onOpen fires for doomed connections. Reset only after the
+                // connection survives STABLE_RESET_MS.
+                handler.removeCallbacks(resetBackoffRunnable)
+                handler.postDelayed(resetBackoffRunnable, STABLE_RESET_MS)
                 // Re-register the FCM token on every connect. The relay
                 // dedups by token, so this is cheap and covers the case
                 // where the relay restarted and lost its in-memory set.
@@ -174,23 +225,29 @@ class ClipboardForegroundService : Service() {
             }
 
             override fun onMessage(ws: WebSocket, text: String) {
+                if (ws !== webSocket) return
                 handleIncomingMessage(text)
             }
 
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
+                if (ws !== webSocket) return
                 isConnecting = false
+                handler.removeCallbacks(resetBackoffRunnable)
                 Log.i(TAG, "WebSocket closed: $code $reason")
                 updateNotification("Disconnected - reconnecting...")
                 scheduleReconnect()
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
+                if (ws !== webSocket) return
                 isConnecting = false
+                handler.removeCallbacks(resetBackoffRunnable)
                 Log.e(TAG, "WebSocket failure", t)
                 updateNotification("Reconnecting...")
                 scheduleReconnect()
             }
         })
+        webSocket = newSocket
     }
 
     private fun handleIncomingMessage(raw: String) {
@@ -220,7 +277,10 @@ class ClipboardForegroundService : Service() {
     /**
      * Schedule exactly one reconnect, replacing any previously-pending one.
      * Uses the current backoffMs, then doubles it (capped at MAX_BACKOFF_MS).
-     * On a successful onOpen, backoffMs is reset to INITIAL_BACKOFF_MS.
+     * Backoff is NOT reset on onOpen - it resets only after a connection
+     * survives STABLE_RESET_MS (see resetBackoffRunnable), so rate-limited
+     * connections that close within milliseconds keep escalating: 2->4->8->
+     * 16->30s. This is what stops the flat "2s forever" storm.
      */
     private fun scheduleReconnect() {
         if (!shouldReconnect) return
@@ -280,6 +340,7 @@ class ClipboardForegroundService : Service() {
         shouldReconnect = false
         isConnecting = false
         handler.removeCallbacks(reconnectRunnable)
+        handler.removeCallbacks(resetBackoffRunnable)
         keepAliveHandler.removeCallbacks(keepAliveRunnable)
         try { webSocket?.close(1000, "service destroyed") } catch (e: Exception) {}
         super.onDestroy()
@@ -321,6 +382,7 @@ class ClipboardForegroundService : Service() {
 
         private const val INITIAL_BACKOFF_MS = 2000L       // 2s
         private const val MAX_BACKOFF_MS = 30_000L         // 30s cap
+        private const val STABLE_RESET_MS = 10_000L        // connection must survive 10s before backoff resets
         private const val KEEPALIVE_INTERVAL_MS = 5 * 60 * 1000L  // 5 min
     }
 }
